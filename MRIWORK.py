@@ -1,8 +1,10 @@
 import vtk
 import nibabel as nib
 import numpy as np
-import subprocess
 import os
+import multiprocessing
+import dicom2nifti
+import argparse
 
 DEFAULT_OPACITY = 1
 WINDOW_SIZE = (1000, 1000)
@@ -270,6 +272,13 @@ def startAnimation(state, targetActorName):
     state.interactor.AddObserver("TimerEvent", lambda obj, event: animateTransition(obj, event, state))
     state.interactor.CreateRepeatingTimer(int(ANIMATION_DURATION / ANIMATION_STEPS))
 
+def brainExtractionWorker(originalImg, outputMaskPath, iterations=1000):
+    from brainext import BrainExtractor
+
+    extractor = BrainExtractor(originalImg) 
+    extractor.run(iterations=iterations)
+    extractor.saveMask(outputMaskPath)
+
 def animateTransition(obj, event, state):
     if not state.isAnimating:
         return
@@ -366,11 +375,6 @@ def createVolume(data, affine, opacity, isBrain):
     volume.SetProperty(volumeProperty)
     return volume
 
-def runFsl(inputFilePath, outputFilePath, betParams):
-    betCommand = ['bet', inputFilePath, outputFilePath] + betParams
-    subprocess.run(betCommand, check=True, env=os.environ.copy())
-    return outputFilePath
-
 def loadNifti(filePath):
     img = nib.as_closest_canonical(nib.load(filePath))
     data = img.get_fdata()
@@ -461,7 +465,7 @@ def setupUi(renderer, interactor, state):
         buttonSpace + buttonHeight
     )
 
-    toggleButton, toggleButtonText = createButton(toggleBounds, "Toggle View")
+    toggleButton, toggleButtonText = createButton(toggleBounds, "Toggle Skull")
     brainButton, brainButtonText = createButton(brainBounds, "Toggle Brain")
     resetButton, resetButtonText = createButton(resetBounds, "Reset")
 
@@ -528,7 +532,7 @@ def setupInfoText(img, brainData, filePath, renderer):
     renderer.AddActor2D(infoText)
     return infoText
 
-def setupVisualization(originalData, brainData, affine, originalImg, brainImgData, inputFilePath):
+def setupVisualization(originalData, brainMask, affine, originalImg, inputFilePath):
     state = VisualizationState()
 
     renderer = vtk.vtkRenderer()
@@ -558,7 +562,7 @@ def setupVisualization(originalData, brainData, affine, originalImg, brainImgDat
 
     roiRenderer.SetActiveCamera(renderer.GetActiveCamera())
 
-    brainMask = brainData > 0
+    brainData = originalData * brainMask
     originalData[brainMask] = 0
 
     brain = createVolume(brainData, affine, DEFAULT_OPACITY, True)
@@ -571,7 +575,7 @@ def setupVisualization(originalData, brainData, affine, originalImg, brainImgDat
     renderer.AddVolume(brain)
 
     setupUi(renderer, interactor, state)
-    setupInfoText(originalImg, brainImgData, inputFilePath, renderer)
+    setupInfoText(originalImg, brainMask, inputFilePath, renderer)
 
     renderer.ResetCamera()
     renderer.SetBackground(*BACKGROUND_COLOR)
@@ -583,33 +587,45 @@ def setupVisualization(originalData, brainData, affine, originalImg, brainImgDat
     interactor.Start()
 
 def main():
-    inputFilePath = "/home/inda/coding/3dmri/brainSet/brain1.nii"
-    betParameters = ['-f', '0.3']
+    parser = argparse.ArgumentParser()
+    parser.add_argument("inputPath")
+    parser.add_argument("-u", "--useFslBet", default = "")
+    args = parser.parse_args()
+    cliInputPath = args.inputPath
+    useFslBet = args.useFslBet
 
-    if not os.path.exists(inputFilePath):
-        print(f"No file: {inputFilePath}")
+    if not os.path.exists(cliInputPath):
+        print(f"No file: {cliInputPath}")
+        return
+    
+    if cliInputPath.endswith(".nii") or cliInputPath.endswith(".nii.gz"):
+        inputFilePath = cliInputPath
+    elif os.path.isdir(cliInputPath):
+        inputDicomFilePath = cliInputPath
+        inputFilePath = os.path.join(cliInputPath, "brainNIFTI.nii")
+        dicom2nifti.dicom_series_to_nifti(inputDicomFilePath, inputFilePath, reorient_nifti=True)
+    else:
+        print("Unsupported format")
         return
 
-    baseName = os.path.basename(inputFilePath)
-    dirName = os.path.dirname(inputFilePath)
-    fileStem = baseName.replace(".nii.gz", "").replace(".nii", "")
-    outputPath = os.path.join(dirName, f"{fileStem}_brain.nii.gz")
-
-    if not os.path.exists(outputPath):
-        runFsl(inputFilePath, outputPath, betParameters)
+    outputPath = inputFilePath.replace(".nii.gz", "").replace(".nii", "") + "_mask.nii.gz"
 
     originalData, affine, originalImg = loadNifti(inputFilePath)
 
-    brainData, _, brainImg = loadNifti(outputPath)
-    brainImgData = brainImg.get_fdata()
+    if not os.path.exists(outputPath):
+        if useFslBet.lower() == "true":
+            from fsl.wrappers import bet
 
+            bet(input=inputFilePath, output=outputPath, f=0.6)
+        else:
+            extraction_process = multiprocessing.Process(target=brainExtractionWorker, args=(originalImg, outputPath, 1000))
+            extraction_process.start()
+            extraction_process.join()
+
+    brainMask, _, _ = loadNifti(outputPath)
     originalDataNorm = normalizeData(originalData)
-    brainDataNorm = normalizeData(brainData)
 
-    originalDataNorm = np.transpose(originalDataNorm, (1, 2, 0)).copy()
-    brainDataNorm = np.transpose(brainDataNorm, (1, 2, 0)).copy()
-
-    setupVisualization(originalDataNorm, brainDataNorm, affine, originalImg, brainImgData, inputFilePath)
+    setupVisualization(originalDataNorm, brainMask.astype(bool), affine, originalImg, inputFilePath)
 
 if __name__ == "__main__":
     main()
