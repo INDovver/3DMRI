@@ -612,6 +612,9 @@ def main():
 
     originalData, affine, originalImg = loadNifti(inputFilePath)
 
+    if originalData.ndim == 4:
+        originalData = originalData[..., 0]
+
     if not os.path.exists(outputPath):
         if useFslBet.lower() == "true":
             from fsl.wrappers import bet
