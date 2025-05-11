@@ -1,5 +1,7 @@
 brainSet/
 niftitodicom/
+test.py
+tst.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

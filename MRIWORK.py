@@ -612,11 +612,14 @@ def main():
 
     originalData, affine, originalImg = loadNifti(inputFilePath)
 
+    if originalData.ndim == 4:
+        originalData = originalData[..., 0]
+
     if not os.path.exists(outputPath):
         if useFslBet.lower() == "true":
             from fsl.wrappers import bet
 
-            bet(input=inputFilePath, output=outputPath, f=0.6)
+            bet(input=inputFilePath, output=outputPath, f=0.2)
         else:
             extraction_process = multiprocessing.Process(target=brainExtractionWorker, args=(originalImg, outputPath, 1000))
             extraction_process.start()
